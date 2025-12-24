@@ -1,7 +1,7 @@
 import time
 import uuid
 import asyncio
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Header
 from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import engine, SessionLocal
@@ -12,6 +12,14 @@ from sqlalchemy import select, text
 settings = get_settings()
 
 app = FastAPI(title='Estate ETL API')
+
+
+def verify_token(x_api_token: str = Header(None)):
+    # If a token is configured, require it; otherwise allow anonymous access (dev mode)
+    if settings.SERVICE_API_TOKEN:
+        if not x_api_token or x_api_token != settings.SERVICE_API_TOKEN:
+            raise HTTPException(status_code=401, detail='Invalid or missing API token')
+    return True
 
 
 @app.on_event('startup')
@@ -45,7 +53,7 @@ async def background_etl():
 
 
 @app.get('/data')
-def get_data(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0), source: str = None):
+def get_data(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0), source: str = None, _auth=Depends(verify_token)):
     request_id = str(uuid.uuid4())
     start = time.time()
     sess = SessionLocal()
@@ -63,7 +71,7 @@ def get_data(limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0),
 
 
 @app.get('/health')
-def health():
+def health(_auth=Depends(verify_token)):
     sess = SessionLocal()
     try:
         # DB connectivity

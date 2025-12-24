@@ -12,6 +12,7 @@ if sys.version_info >= (3, 13):
 # Ensure CI/tests use sqlite and don't run ETL at startup
 os.environ.setdefault('DATABASE_URL', 'sqlite:///:memory:')
 os.environ.setdefault('ETL_RUN_ON_START', '0')
+os.environ.setdefault('SERVICE_API_TOKEN', 'test-token')
 
 from fastapi.testclient import TestClient
 from app.main import app
@@ -28,14 +29,14 @@ def setup_module(module):
 
 
 def test_health_endpoint():
-    r = client.get('/health')
+    r = client.get('/health', headers={'X-API-TOKEN': 'test-token'})
     assert r.status_code == 200
     body = r.json()
     assert 'db' in body
 
 
 def test_get_data_empty():
-    r = client.get('/data')
+    r = client.get('/data', headers={'X-API-TOKEN': 'test-token'})
     assert r.status_code == 200
     body = r.json()
     assert 'items' in body
