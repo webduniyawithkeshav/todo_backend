@@ -28,9 +28,10 @@ def startup_event():
             # log and continue
             print('ETL startup failed:', e)
 
-    # start background periodic ETL
-    loop = asyncio.get_event_loop()
-    loop.create_task(background_etl())
+    # start background periodic ETL only if enabled
+    if settings.ETL_RUN_ON_START:
+        loop = asyncio.get_event_loop()
+        loop.create_task(background_etl())
 
 
 async def background_etl():

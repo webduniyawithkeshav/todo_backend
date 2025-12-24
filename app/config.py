@@ -6,6 +6,7 @@ class Settings:
     API_KEY: str = os.getenv('API_KEY', '')
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql+psycopg2://postgres:postgres@db:5432/postgres')
     CSV_PATH: str = os.getenv('CSV_PATH', '/data/input.csv')
+    THIRD_CSV_PATH: str = os.getenv('THIRD_CSV_PATH', '/data/third_input.csv')
     ETL_RUN_ON_START: bool = os.getenv('ETL_RUN_ON_START', '1') == '1'
 
 @lru_cache()

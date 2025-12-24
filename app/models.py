@@ -22,6 +22,15 @@ raw_csv = Table(
     Column('created_at', DateTime, server_default=func.now()),
 )
 
+
+raw_third = Table(
+    'raw_third', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('payload', JSON, nullable=False),
+    Column('source_id', String, nullable=True),
+    Column('created_at', DateTime, server_default=func.now()),
+)
+
 unified = Table(
     'unified_records', metadata,
     Column('id', Integer, primary_key=True, autoincrement=True),
