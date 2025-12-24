@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from .api_client import fetch_api_items
+from .api_client2 import fetch_api2_items
 from .config import get_settings
-from .models import UnifiedRecord, raw_api, raw_csv, raw_third, unified, etl_meta, etl_runs
+from .models import UnifiedRecord, raw_api, raw_api2, raw_csv, raw_third, unified, etl_meta, etl_runs
 from .db import engine, SessionLocal
 from sqlalchemy.orm import Session
 from sqlalchemy import insert, select, update, func
@@ -38,8 +39,8 @@ def get_etl_meta(session, key: str):
 
 
 def create_etl_run(session, run_id: str):
-    # create per-source entries (api, csv, third_csv) for tracking
-    sources = ['api', 'csv', 'third_csv']
+    # create per-source entries (api, api2, csv, third_csv) for tracking
+    sources = ['api', 'api2', 'csv', 'third_csv']
     for s in sources:
         session.execute(insert(etl_runs).values(run_id=run_id, source=s, status='running'))
     session.commit()
@@ -207,6 +208,42 @@ def ingest_third_csv_once(session: Optional[Session] = None, run_id: Optional[st
                     update_run_checkpoint(session, run_id, 'third_csv', last_processed_id=max_seen)
         if not run_id and max_seen:
             record_etl_meta(session, 'last_third_csv_id', str(max_seen))
+    finally:
+        if close_session:
+            session.close()
+
+
+def ingest_api2_once(session: Optional[Session] = None, run_id: Optional[str] = None, resume_from: Optional[str] = None):
+    """Ingest from a second API source. Expected items have 'uid' and 'fullName'."""
+    close_session = False
+    if session is None:
+        session = SessionLocal()
+        close_session = True
+    try:
+        last = resume_from if resume_from is not None else get_etl_meta(session, 'last_api2_id')
+        items = fetch_api2_items(since=last)
+        for it in items:
+            # store raw
+            sid = it.get('uid') or it.get('id')
+            session.execute(insert(raw_api2).values(payload=it, source_id=str(sid)))
+            # normalize
+            record_id = make_record_id('api2', sid)
+            try:
+                # second API uses 'fullName' for name
+                rec = UnifiedRecord(record_id=record_id, name=it.get('fullName') or it.get('name'), source='api2')
+            except Exception:
+                continue
+            existing = session.execute(select(unified).where(unified.c.record_id == rec.record_id)).first()
+            if existing:
+                session.execute(update(unified).where(unified.c.record_id == rec.record_id).values(name=rec.name, source=rec.source, raw_payload=it))
+            else:
+                session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=it))
+            if sid:
+                last = str(sid)
+            if run_id:
+                update_run_checkpoint(session, run_id, 'api2', last_processed_id=last)
+        if not run_id and last:
+            record_etl_meta(session, 'last_api2_id', last)
     finally:
         if close_session:
             session.close()

@@ -14,6 +14,15 @@ raw_api = Table(
     Column('created_at', DateTime, server_default=func.now()),
 )
 
+
+raw_api2 = Table(
+    'raw_api2', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('payload', JSON, nullable=False),
+    Column('source_id', String, nullable=True),
+    Column('created_at', DateTime, server_default=func.now()),
+)
+
 raw_csv = Table(
     'raw_csv', metadata,
     Column('id', Integer, primary_key=True, autoincrement=True),
