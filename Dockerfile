@@ -19,11 +19,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . /app
 
-# Make a non-root user (optional security)
-RUN useradd -m appuser && chown -R appuser /app
+# Make entrypoint executable and create non-root user
+RUN chmod +x /app/docker-entrypoint.sh \
+    && useradd -m appuser && chown -R appuser /app
+
 USER appuser
 
 EXPOSE 8000
 
-ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
