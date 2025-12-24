@@ -74,6 +74,25 @@ Environment variables (recommended to set in your shell or a `.env` file):
 - `API_URL` — URL for the API ingestion source
 - `API_KEY` — API key for the API source (kept secret via environment variable)
 
+## Airflow (optional)
+
+There is a placeholder Airflow DAG in `dags/example_etl_dag.py` that
+calls the project's `run_full_etl()` function via a PythonOperator. To
+use it:
+
+1. Deploy this repository's `dags/` directory to an Airflow instance
+	(for example, use the official Apache Airflow Docker images and mount
+	this `dags/` directory into the container).
+2. Ensure Airflow's Python environment can import this repository (e.g.
+	mount the project code into the worker or install it as a package).
+3. Enable the DAG named `example_etl_dag` in the Airflow UI. The DAG
+	runs hourly by default and invokes the ETL runner.
+
+This DAG is intentionally minimal — it's a starting point to integrate
+Airflow as the scheduler for the ETL. If you'd like, I can add a
+docker-compose profile that brings up a local Airflow instance wired to
+the same Postgres database and with the DAG pre-mounted.
+
 CSV input file (for CSV ingestion) should be mounted or placed at `./data/input.csv` or set `CSV_PATH` to a different path.
 
 Design notes
