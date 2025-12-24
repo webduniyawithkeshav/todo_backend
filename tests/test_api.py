@@ -1,5 +1,10 @@
 import os
 import time
+
+# Ensure CI/tests use sqlite and don't run ETL at startup
+os.environ.setdefault('DATABASE_URL', 'sqlite:///:memory:')
+os.environ.setdefault('ETL_RUN_ON_START', '0')
+
 from fastapi.testclient import TestClient
 from app.main import app
 from app.db import engine

@@ -2,6 +2,10 @@ import os
 import tempfile
 from pathlib import Path
 
+# Ensure tests use sqlite and don't run ETL at startup
+os.environ.setdefault('DATABASE_URL', 'sqlite:///:memory:')
+os.environ.setdefault('ETL_RUN_ON_START', '0')
+
 from app.etl import ingest_csv_once
 
 
