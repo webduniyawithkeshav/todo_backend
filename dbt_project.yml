@@ -1,0 +1,8 @@
+name: 'estate_dbt'
+version: '1.0'
+config-version: 2
+profile: 'default'
+source-paths: ["models"]
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_modules"]
