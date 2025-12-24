@@ -50,6 +50,19 @@ etl_meta = Table(
 )
 
 
+etl_runs = Table(
+    'etl_runs', metadata,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('run_id', String, nullable=False),
+    Column('source', String, nullable=False),
+    Column('last_processed_id', String, nullable=True),
+    Column('status', String, nullable=False, default='running'),
+    Column('started_at', DateTime, server_default=func.now()),
+    Column('finished_at', DateTime, nullable=True),
+    Column('error_msg', String, nullable=True),
+)
+
+
 class UnifiedRecord(BaseModel):
     record_id: str
     name: Optional[str]

@@ -1,13 +1,16 @@
 import csv
 import json
 import time
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 from .api_client import fetch_api_items
 from .config import get_settings
-from .models import UnifiedRecord, raw_api, raw_csv, raw_third, unified, etl_meta
+from .models import UnifiedRecord, raw_api, raw_csv, raw_third, unified, etl_meta, etl_runs
 from .db import engine, SessionLocal
-from sqlalchemy import insert, select, update
+from sqlalchemy.orm import Session
+from sqlalchemy import insert, select, update, func
 
 settings = get_settings()
 
@@ -34,11 +37,57 @@ def get_etl_meta(session, key: str):
     return res
 
 
-def ingest_api_once():
-    session = SessionLocal()
+def create_etl_run(session, run_id: str):
+    # create per-source entries (api, csv, third_csv) for tracking
+    sources = ['api', 'csv', 'third_csv']
+    for s in sources:
+        session.execute(insert(etl_runs).values(run_id=run_id, source=s, status='running'))
+    session.commit()
+
+
+def update_run_checkpoint(session, run_id: str, source: str, last_processed_id: Optional[str] = None, status: Optional[str] = None, error_msg: Optional[str] = None):
+    stmt = select(etl_runs).where(etl_runs.c.run_id == run_id).where(etl_runs.c.source == source)
+    row = session.execute(stmt).first()
+    if row:
+        upd_vals = {}
+        if last_processed_id is not None:
+            upd_vals['last_processed_id'] = str(last_processed_id)
+        if status is not None:
+            upd_vals['status'] = status
+        if error_msg is not None:
+            upd_vals['error_msg'] = str(error_msg)
+        if upd_vals:
+            session.execute(update(etl_runs).where(etl_runs.c.run_id == run_id).where(etl_runs.c.source == source).values(**upd_vals))
+            session.commit()
+
+
+def mark_run_finished(session, run_id: str, status: str = 'completed', error_msg: Optional[str] = None):
+    vals = {'status': status, 'finished_at': func.now()}
+    if error_msg:
+        vals['error_msg'] = error_msg
+    session.execute(update(etl_runs).where(etl_runs.c.run_id == run_id).values(**vals))
+    session.commit()
+
+
+def get_failed_run_resume(session) -> Dict[str, Optional[str]]:
+    # find latest failed run and return per-source last_processed_id map
+    stmt = select(etl_runs.c.run_id).where(etl_runs.c.status == 'failed').order_by(etl_runs.c.started_at.desc()).limit(1)
+    res = session.execute(stmt).scalar()
+    if not res:
+        return {}
+    run_id = res
+    rows = session.execute(select(etl_runs).where(etl_runs.c.run_id == run_id)).fetchall()
+    return {r._mapping['source']: r._mapping.get('last_processed_id') for r in rows}
+
+
+def ingest_api_once(session: Optional[Session] = None, run_id: Optional[str] = None, resume_from: Optional[str] = None):
+    close_session = False
+    if session is None:
+        session = SessionLocal()
+        close_session = True
     try:
         # get last processed id
-        last = get_etl_meta(session, 'last_api_id')
+        last = resume_from if resume_from is not None else get_etl_meta(session, 'last_api_id')
         items = fetch_api_items(since=last)
         for it in items:
             # store raw
@@ -50,21 +99,34 @@ def ingest_api_once():
                 rec = UnifiedRecord(record_id=record_id, name=it.get('name'), source='api')
             except Exception:
                 continue
-            session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=it))
+            # idempotent write: update if exists, else insert
+            existing = session.execute(select(unified).where(unified.c.record_id == rec.record_id)).first()
+            if existing:
+                session.execute(update(unified).where(unified.c.record_id == rec.record_id).values(name=rec.name, source=rec.source, raw_payload=it))
+            else:
+                session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=it))
             last = str(it.get('id'))
-        if last:
+            # write checkpoint for this run if provided
+            if run_id:
+                update_run_checkpoint(session, run_id, 'api', last_processed_id=last)
+        # if run_id not provided, commit to etl_meta immediately
+        if not run_id and last:
             record_etl_meta(session, 'last_api_id', last)
     finally:
-        session.close()
+        if close_session:
+            session.close()
 
 
-def ingest_csv_once():
-    session = SessionLocal()
+def ingest_csv_once(session: Optional[Session] = None, run_id: Optional[str] = None, resume_from: Optional[str] = None):
+    close_session = False
+    if session is None:
+        session = SessionLocal()
+        close_session = True
     try:
         csv_path = Path(settings.CSV_PATH)
         if not csv_path.exists():
             return
-        last = get_etl_meta(session, 'last_csv_id')
+        last = resume_from if resume_from is not None else get_etl_meta(session, 'last_csv_id')
         max_seen = last
         with csv_path.open(newline='') as fh:
             reader = csv.DictReader(fh)
@@ -80,25 +142,36 @@ def ingest_csv_once():
                     rec = UnifiedRecord(record_id=record_id, name=payload.get('name'), source='csv')
                 except Exception:
                     continue
-                session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=payload))
+                # idempotent write
+                existing = session.execute(select(unified).where(unified.c.record_id == rec.record_id)).first()
+                if existing:
+                    session.execute(update(unified).where(unified.c.record_id == rec.record_id).values(name=rec.name, source=rec.source, raw_payload=payload))
+                else:
+                    session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=payload))
                 max_seen = rid
-        if max_seen:
+                if run_id:
+                    update_run_checkpoint(session, run_id, 'csv', last_processed_id=max_seen)
+        if not run_id and max_seen:
             record_etl_meta(session, 'last_csv_id', str(max_seen))
     finally:
-        session.close()
+        if close_session:
+            session.close()
 
 
-def ingest_third_csv_once():
+def ingest_third_csv_once(session: Optional[Session] = None, run_id: Optional[str] = None, resume_from: Optional[str] = None):
     """Ingest a second CSV source with quirky schema into raw_third and the unified table.
 
     Expected columns: uid, full_name (names may include extra whitespace or 'N/A').
     """
-    session = SessionLocal()
+    close_session = False
+    if session is None:
+        session = SessionLocal()
+        close_session = True
     try:
         csv_path = Path(settings.THIRD_CSV_PATH)
         if not csv_path.exists():
             return
-        last = get_etl_meta(session, 'last_third_csv_id')
+        last = resume_from if resume_from is not None else get_etl_meta(session, 'last_third_csv_id')
         max_seen = last
         with csv_path.open(newline='') as fh:
             reader = csv.DictReader(fh)
@@ -123,19 +196,58 @@ def ingest_third_csv_once():
                     rec = UnifiedRecord(record_id=record_id, name=name, source='third_csv')
                 except Exception:
                     continue
-                session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=payload))
+                # idempotent write
+                existing = session.execute(select(unified).where(unified.c.record_id == rec.record_id)).first()
+                if existing:
+                    session.execute(update(unified).where(unified.c.record_id == rec.record_id).values(name=rec.name, source=rec.source, raw_payload=payload))
+                else:
+                    session.execute(insert(unified).values(record_id=rec.record_id, name=rec.name, source=rec.source, raw_payload=payload))
                 max_seen = raw_uid
-        if max_seen:
+                if run_id:
+                    update_run_checkpoint(session, run_id, 'third_csv', last_processed_id=max_seen)
+        if not run_id and max_seen:
             record_etl_meta(session, 'last_third_csv_id', str(max_seen))
     finally:
-        session.close()
+        if close_session:
+            session.close()
 
 
 def run_full_etl():
     ensure_tables()
-    ingest_api_once()
-    ingest_csv_once()
-    ingest_third_csv_once()
+    session = SessionLocal()
+    try:
+        # create a new run id and checkpoint entries
+        run_id = str(uuid.uuid4())
+        create_etl_run(session, run_id)
+
+        # check if there is a failed run to resume from
+        resume_map = get_failed_run_resume(session)
+
+        try:
+            ingest_api_once(session=session, run_id=run_id, resume_from=resume_map.get('api'))
+            ingest_csv_once(session=session, run_id=run_id, resume_from=resume_map.get('csv'))
+            ingest_third_csv_once(session=session, run_id=run_id, resume_from=resume_map.get('third_csv'))
+        except Exception as e:
+            # mark run as failed with error
+            mark_run_finished(session, run_id, status='failed', error_msg=str(e))
+            raise
+
+        # on successful completion, copy checkpoints into etl_meta atomically
+        rows = session.execute(select(etl_runs).where(etl_runs.c.run_id == run_id)).fetchall()
+        for r in rows:
+            src = r._mapping['source']
+            last = r._mapping.get('last_processed_id')
+            if last:
+                if src == 'api':
+                    record_etl_meta(session, 'last_api_id', last)
+                elif src == 'csv':
+                    record_etl_meta(session, 'last_csv_id', last)
+                elif src == 'third_csv':
+                    record_etl_meta(session, 'last_third_csv_id', last)
+
+        mark_run_finished(session, run_id, status='completed')
+    finally:
+        session.close()
 
 
 def make_record_id(source: str, ext_id: Any):
