@@ -29,13 +29,45 @@ jobs:
           pip install -r requirements.txt
       - name: Run tests (verbose, save output)
         shell: bash
+        continue-on-error: true
         run: |
           set -o pipefail
           pytest -vv | tee pytest-output.txt
-          # propagate pytest exit code
-          exit ${PIPESTATUS[0]}
+          # save pytest exit code so later steps can act on it
+          echo ${PIPESTATUS[0]} > pytest-exit-code.txt
+
+      - name: Show pytest output (for public logs)
+        if: always()
+        shell: bash
+        run: |
+          echo '=== pytest output start ==='
+          if [ -f pytest-output.txt ]; then
+            sed -n '1,20000p' pytest-output.txt || true
+          else
+            echo 'No pytest-output.txt found.'
+          fi
+          echo '=== pytest output end ==='
+
       - name: Upload pytest output
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-logs
-          path: pytest-output.txt
+          path: |
+            pytest-output.txt
+            pytest-exit-code.txt
+
+      - name: Fail job if tests failed
+        if: always()
+        shell: bash
+        run: |
+          if [ -f pytest-exit-code.txt ]; then
+            code=$(cat pytest-exit-code.txt)
+            echo "pytest exit code: $code"
+            if [ "$code" != "0" ]; then
+              exit $code
+            fi
+          else
+            echo 'No pytest exit code found, assuming failure.'
+            exit 1
+          fi
